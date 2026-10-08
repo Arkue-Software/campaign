@@ -1,0 +1,43 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedVital.Campanas.Dominio", "src\RedVital.Campanas.Dominio\RedVital.Campanas.Dominio.csproj", "{A250C388-13B8-4E68-B3A7-A927FE1A0510}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedVital.Campanas.Infraestructura", "src\RedVital.Campanas.Infraestructura\RedVital.Campanas.Infraestructura.csproj", "{960AC6CB-B456-4193-8488-0EE0CA3035A1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedVital.Campanas.Aplicacion", "src\RedVital.Campanas.Aplicacion\RedVital.Campanas.Aplicacion.csproj", "{4536CC03-BCD4-44DF-AC1A-912FA4F3CBF1}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedVital.Campanas.Api", "src\RedVital.Campanas.Api\RedVital.Campanas.Api.csproj", "{45EB07F0-85BE-425F-9F45-E4F3C6E099ED}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RedVital.Campanas.Pruebas", "tests\RedVital.Campanas.Pruebas\RedVital.Campanas.Pruebas.csproj", "{4AC52E17-4057-4407-AD18-C0AE73E3F6F9}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A250C388-13B8-4E68-B3A7-A927FE1A0510}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A250C388-13B8-4E68-B3A7-A927FE1A0510}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A250C388-13B8-4E68-B3A7-A927FE1A0510}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A250C388-13B8-4E68-B3A7-A927FE1A0510}.Release|Any CPU.Build.0 = Release|Any CPU
+		{960AC6CB-B456-4193-8488-0EE0CA3035A1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{960AC6CB-B456-4193-8488-0EE0CA3035A1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{960AC6CB-B456-4193-8488-0EE0CA3035A1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{960AC6CB-B456-4193-8488-0EE0CA3035A1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4536CC03-BCD4-44DF-AC1A-912FA4F3CBF1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4536CC03-BCD4-44DF-AC1A-912FA4F3CBF1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4536CC03-BCD4-44DF-AC1A-912FA4F3CBF1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4536CC03-BCD4-44DF-AC1A-912FA4F3CBF1}.Release|Any CPU.Build.0 = Release|Any CPU
+		{45EB07F0-85BE-425F-9F45-E4F3C6E099ED}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{45EB07F0-85BE-425F-9F45-E4F3C6E099ED}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{45EB07F0-85BE-425F-9F45-E4F3C6E099ED}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{45EB07F0-85BE-425F-9F45-E4F3C6E099ED}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4AC52E17-4057-4407-AD18-C0AE73E3F6F9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4AC52E17-4057-4407-AD18-C0AE73E3F6F9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4AC52E17-4057-4407-AD18-C0AE73E3F6F9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4AC52E17-4057-4407-AD18-C0AE73E3F6F9}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
