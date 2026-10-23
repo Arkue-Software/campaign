@@ -1,0 +1,163 @@
+asyncapi: 3.0.0
+info:
+  title: RedVital — Eventos del Servicio de Campañas
+  version: 1.0.0
+  description: |
+    Contrato del evento que publica Campañas y del que consume (DD V3.0,
+    Tabla 27; Herramientas V4.0, entrada 93). Toda comunicación entre
+    Campañas y Donación pasa por estos temas: ninguno de los dos servicios
+    llama al otro por HTTP.
+
+    Política de contenido (RT-16): solo identificadores y datos públicos de la
+    campaña. Nunca datos de donantes ni reservas.
+defaultContentType: application/json
+
+servers:
+  kafka:
+    host: kafka:9092
+    protocol: kafka
+    security:
+      - $ref: '#/components/securitySchemes/scram'
+
+channels:
+  campaniaPublicada:
+    address: redvital.campanias.campaign-published.v1
+    title: EV-03 — Campaña publicada
+    description: |
+      Se escribe en la bandeja de salida en la misma transacción que fija
+      publicada_en. Consumidor: Donación (grupo donacion), que la proyecta
+      localmente y genera los avisos a los donantes del territorio.
+    messages:
+      campaniaPublicada:
+        $ref: '#/components/messages/CampaniaPublicada'
+    bindings:
+      kafka:
+        partitions: 3
+        replicas: 1
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 604800000
+        bindingVersion: 0.5.0
+  donacionCompletada:
+    address: redvital.donacion.donation-completed.v1
+    title: EV-01 — Donación registrada (consumido)
+    description: Productor Donación. Campañas lo consume (grupo campanias) para contar donaciones por campaña (RF-25, D-09).
+    messages:
+      donacionCompletada:
+        $ref: '#/components/messages/DonacionCompletada'
+
+operations:
+  publicarCampaniaPublicada:
+    action: send
+    channel:
+      $ref: '#/channels/campaniaPublicada'
+    messages:
+      - $ref: '#/channels/campaniaPublicada/messages/campaniaPublicada'
+  consumirDonacionCompletada:
+    action: receive
+    channel:
+      $ref: '#/channels/donacionCompletada'
+    messages:
+      - $ref: '#/channels/donacionCompletada/messages/donacionCompletada'
+    bindings:
+      kafka:
+        groupId:
+          type: string
+          enum: [campanias]
+        bindingVersion: 0.5.0
+
+components:
+  securitySchemes:
+    scram:
+      type: scramSha512
+
+  messages:
+    CampaniaPublicada:
+      name: campaign.published
+      title: Campaña publicada
+      headers:
+        $ref: '#/components/schemas/Cabeceras'
+      payload:
+        $ref: '#/components/schemas/CampaniaPublicadaV1'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: campania_id
+          bindingVersion: 0.5.0
+    DonacionCompletada:
+      name: donation.completed
+      title: Donación registrada
+      headers:
+        $ref: '#/components/schemas/Cabeceras'
+      payload:
+        $ref: '#/components/schemas/DonacionCompletadaV1'
+
+  schemas:
+    Cabeceras:
+      type: object
+      required: [evento-id, evento-tipo, evento-version, correlacion-id, ocurrido-en, productor]
+      properties:
+        evento-id:
+          type: string
+          format: uuid
+        evento-tipo:
+          type: string
+        evento-version:
+          type: string
+        correlacion-id:
+          type: string
+          maxLength: 36
+        ocurrido-en:
+          type: string
+          format: date-time
+        productor:
+          type: string
+
+    CampaniaPublicadaV1:
+      type: object
+      additionalProperties: false
+      required: [campania_id, institucion_id, nombre, sede, territorio_codigo, territorio_ruta, inicia_en, termina_en, publicada_en]
+      properties:
+        campania_id:
+          type: string
+          format: uuid
+        institucion_id:
+          type: string
+          format: uuid
+          description: Institución organizadora.
+        nombre:
+          type: string
+          maxLength: 160
+        sede:
+          type: string
+          maxLength: 200
+        territorio_codigo:
+          type: string
+          pattern: '^[0-9]{5}$'
+          description: Código DIVIPOLA del municipio de la sede.
+        territorio_ruta:
+          type: string
+          pattern: '^/00/[0-9]{2}/[0-9]{5}$'
+        inicia_en:
+          type: string
+          format: date-time
+        termina_en:
+          type: string
+          format: date-time
+        publicada_en:
+          type: string
+          format: date-time
+
+    DonacionCompletadaV1:
+      type: object
+      description: Forma definida por Donación. Campañas solo usa donacion_id y campania_id, y tolera campos nuevos.
+      required: [donacion_id, campania_id]
+      properties:
+        donacion_id:
+          type: string
+          format: uuid
+        campania_id:
+          type: [string, 'null']
+          format: uuid
