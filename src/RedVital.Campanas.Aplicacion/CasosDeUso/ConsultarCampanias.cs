@@ -19,11 +19,13 @@ public class ConsultarCampanias
 {
     private readonly CampanasDbContext _contexto;
     private readonly IRegistradorAuditoriaCamp _auditoria;
+    private readonly IResolutorInstitucion _instituciones;
 
-    public ConsultarCampanias(CampanasDbContext contexto, IRegistradorAuditoriaCamp auditoria)
+    public ConsultarCampanias(CampanasDbContext contexto, IRegistradorAuditoriaCamp auditoria, IResolutorInstitucion instituciones)
     {
         _contexto = contexto;
         _auditoria = auditoria;
+        _instituciones = instituciones;
     }
 
     public async Task<Resultado<List<CampaniaRespuesta>>> EjecutarAsync(
@@ -62,7 +64,9 @@ public class ConsultarCampanias
         }
 
         var lista = await q.OrderBy(c => c.IniciaEn).ToListAsync(ct);
-        return Resultado<List<CampaniaRespuesta>>.Ok(lista.Select(c => CampaniaRespuesta.Desde(c, s.EsInstitucional)).ToList());
+        var nombres = await _instituciones.NombresAsync(lista.Select(c => c.InstitucionId).Distinct().ToList(), ct);
+        return Resultado<List<CampaniaRespuesta>>.Ok(lista
+            .Select(c => CampaniaRespuesta.Desde(c, nombres.GetValueOrDefault(c.InstitucionId), s.EsInstitucional)).ToList());
     }
 
     private async Task<Resultado<List<CampaniaRespuesta>>> DenegarAsync(Solicitante s, string correlacionId, CancellationToken ct)

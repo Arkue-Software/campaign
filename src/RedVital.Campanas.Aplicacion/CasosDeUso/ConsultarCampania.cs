@@ -18,11 +18,13 @@ public class ConsultarCampania
 {
     private readonly CampanasDbContext _contexto;
     private readonly IRegistradorAuditoriaCamp _auditoria;
+    private readonly IResolutorInstitucion _instituciones;
 
-    public ConsultarCampania(CampanasDbContext contexto, IRegistradorAuditoriaCamp auditoria)
+    public ConsultarCampania(CampanasDbContext contexto, IRegistradorAuditoriaCamp auditoria, IResolutorInstitucion instituciones)
     {
         _contexto = contexto;
         _auditoria = auditoria;
+        _instituciones = instituciones;
     }
 
     public async Task<Resultado<CampaniaRespuesta>> EjecutarAsync(Solicitante s, Guid id, string correlacionId, CancellationToken ct = default)
@@ -48,6 +50,6 @@ public class ConsultarCampania
             return Resultado<CampaniaRespuesta>.Error(Fallo.NoEncontrado);
         }
 
-        return Resultado<CampaniaRespuesta>.Ok(CampaniaRespuesta.Desde(c, s.EsInstitucional));
+        return Resultado<CampaniaRespuesta>.Ok(CampaniaRespuesta.Desde(c, await NombresInstitucion.DeAsync(_instituciones, c.InstitucionId, ct), s.EsInstitucional));
     }
 }
