@@ -44,6 +44,20 @@ public class ReservaCupo
 /// Bandeja de salida (ADR-018). Se escribe en la misma transacción que el
 /// hecho; un publicador del servicio la drena hacia Kafka en orden.
 /// </summary>
+/// <summary>Fila de institucion_proyeccion: lo último que se supo de la institución por EV-07.</summary>
+public class InstitucionProyeccion
+{
+    public Guid InstitucionId { get; set; }
+    public required string Codigo { get; set; }
+    public required string Nombre { get; set; }
+    public required string Tipo { get; set; }
+    public required string TerritorioCodigo { get; set; }
+    public required string TerritorioRuta { get; set; }
+    public bool Vigente { get; set; }
+    public DateTimeOffset CambiadoEn { get; set; }
+    public DateTimeOffset ActualizadoEn { get; set; }
+}
+
 public class EventoSalida
 {
     public Guid Id { get; set; }

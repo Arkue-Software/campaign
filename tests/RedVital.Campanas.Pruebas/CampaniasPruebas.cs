@@ -69,9 +69,9 @@ public class CampaniasPruebas
     };
 
     private static Guid IdDe(CampanasDbContext c, string nombre) => c.Campanias.Single(x => x.Nombre == nombre).Id;
-    private static ConsultarCampanias Consultar(CampanasDbContext c) => new(c, new RegistradorAuditoriaCamp(c));
-    private static ConsultarCampania Detalle(CampanasDbContext c) => new(c, new RegistradorAuditoriaCamp(c));
-    private static CambiarEstadoCampania Cambiar(CampanasDbContext c) => new(c, new RegistradorAuditoriaCamp(c));
+    private static ConsultarCampanias Consultar(CampanasDbContext c) => new(c, new RegistradorAuditoriaCamp(c), new InstitucionesProyectadas(c));
+    private static ConsultarCampania Detalle(CampanasDbContext c) => new(c, new RegistradorAuditoriaCamp(c), new InstitucionesProyectadas(c));
+    private static CambiarEstadoCampania Cambiar(CampanasDbContext c) => new(c, new RegistradorAuditoriaCamp(c), new InstitucionesProyectadas(c));
     private static readonly ConsultaCampanias SinFiltro = new(null, null, null);
 
     // ---------- T-312.2 ----------
@@ -180,8 +180,7 @@ public class CampaniasPruebas
         var r = await Cambiar(c).EjecutarAsync(AdminBanco(InstA), id, Accion.Publicar, "corr-pub");
 
         Assert.True(r.Exitoso);
-        var evento = Assert.Single(c.EventosSalida);
-        Assert.Equal("campaign.published", evento.Tipo);
+        var evento = Assert.Single(c.EventosSalida, e => e.Tipo == "campaign.published");
         Assert.Equal("redvital.campanias.campaign-published.v1", evento.Tema);
         Assert.Equal(id.ToString(), evento.Clave);
         Assert.Equal($"campania_publicada:{id}", evento.ClaveNatural);
@@ -194,7 +193,7 @@ public class CampaniasPruebas
 
         // Un reenvío de la publicación no genera un segundo evento.
         await Cambiar(c).EjecutarAsync(AdminBanco(InstA), id, Accion.Publicar, "corr-pub-2");
-        Assert.Single(c.EventosSalida);
+        Assert.Single(c.EventosSalida, e => e.Tipo == "campaign.published");
     }
 
     [Fact]
@@ -202,7 +201,7 @@ public class CampaniasPruebas
     {
         var c = Contexto();
         await Cambiar(c).EjecutarAsync(AdminBanco(InstA), IdDe(c, "A-publicada"), Accion.Cerrar, "corr");
-        Assert.Empty(c.EventosSalida);
+        Assert.DoesNotContain(c.EventosSalida, e => e.Tipo == "campaign.published");
     }
 
     [Fact]
@@ -292,5 +291,42 @@ public class CampaniasPruebas
             ValidAudience = "redvital",
             IssuerSigningKey = new RsaSecurityKey(LlaveDePrueba),
         }, out _));
+    }
+
+    [Fact]
+    public async Task El_listado_trae_el_nombre_del_banco_cuando_ya_llego_su_evento()
+    {
+        var c = Contexto();
+        c.Instituciones.Add(new InstitucionProyeccion
+        {
+            InstitucionId = InstA, Codigo = "QA-A", Nombre = "Banco de Sangre del Norte", Tipo = "banco_de_sangre",
+            TerritorioCodigo = "11001", TerritorioRuta = "/00/11/11001", Vigente = true,
+            CambiadoEn = DateTimeOffset.UtcNow, ActualizadoEn = DateTimeOffset.UtcNow,
+        });
+        c.SaveChanges();
+
+        var r = await Consultar(c).EjecutarAsync(Solicitante.Anonimo, SinFiltro, "corr");
+
+        Assert.Equal("Banco de Sangre del Norte", r.Valor!.Single(x => x.Nombre == "A-publicada").InstitucionNombre);
+        Assert.Null(r.Valor!.Single(x => x.Nombre == "B-publicada").InstitucionNombre);
+        var detalle = await Detalle(c).EjecutarAsync(Donante(), IdDe(c, "A-publicada"), "corr");
+        Assert.Equal("Banco de Sangre del Norte", detalle.Valor!.InstitucionNombre);
+    }
+
+    [Fact]
+    public async Task Cada_registro_de_auditoria_sale_por_la_bandeja_con_la_estructura_comun()
+    {
+        var c = Contexto();
+        await Cambiar(c).EjecutarAsync(AdminBanco(InstA), IdDe(c, "A-borrador"), Accion.Publicar, "corr-aud");
+
+        var registro = Assert.Single(c.RegistroAuditoriaCamp);
+        var evento = Assert.Single(c.EventosSalida, e => e.Tipo == "audit.recorded");
+        Assert.Equal(RegistradorAuditoriaCamp.Tema, evento.Tema);
+        Assert.Equal("corr-aud", evento.Clave);
+        using var carga = System.Text.Json.JsonDocument.Parse(evento.Carga);
+        Assert.Equal(registro.Id, carga.RootElement.GetProperty("id").GetGuid());
+        Assert.Equal("publicar_campania", carga.RootElement.GetProperty("operacion").GetString());
+        Assert.Equal("campania", carga.RootElement.GetProperty("recurso_tipo").GetString());
+        Assert.Equal("permitido", carga.RootElement.GetProperty("resultado").GetString());
     }
 }

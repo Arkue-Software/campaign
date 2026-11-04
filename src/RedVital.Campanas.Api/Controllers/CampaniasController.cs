@@ -3,6 +3,8 @@
 // GET  /v1/campanias/{id}             → T-312.3 (requiere token)
 // POST /v1/campanias/{id}/publicacion → T-312.4
 // POST /v1/campanias/{id}/cierre      → T-312.4
+// POST /v1/campanias                  → crear en borrador (U4), territorio por el Servicio Institucional
+// PUT  /v1/campanias/{id}             → editar en borrador (U4)
 
 using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
@@ -20,12 +22,37 @@ public class CampaniasController : ControllerBase
     private readonly ConsultarCampanias _consultar;
     private readonly ConsultarCampania _detalle;
     private readonly CambiarEstadoCampania _cambiarEstado;
+    private readonly CrearCampania _crear;
+    private readonly EditarCampania _editar;
 
-    public CampaniasController(ConsultarCampanias consultar, ConsultarCampania detalle, CambiarEstadoCampania cambiarEstado)
+    public CampaniasController(ConsultarCampanias consultar, ConsultarCampania detalle, CambiarEstadoCampania cambiarEstado,
+        CrearCampania crear, EditarCampania editar)
     {
         _consultar = consultar;
         _detalle = detalle;
         _cambiarEstado = cambiarEstado;
+        _crear = crear;
+        _editar = editar;
+    }
+
+    /// <summary>Crear campaña: nace en borrador con la institución del token.</summary>
+    [HttpPost]
+    [Authorize]
+    public async Task<IActionResult> CrearAsync([FromBody] DatosCampania cuerpo, CancellationToken ct)
+    {
+        var correlacionId = HttpContext.CorrelacionId();
+        var r = await _crear.EjecutarAsync(Solicitante_(User), cuerpo, correlacionId, ct);
+        return r.Exitoso ? StatusCode(201, r.Valor) : Problemas.Desde(r, correlacionId);
+    }
+
+    /// <summary>Editar campaña: solo en borrador.</summary>
+    [HttpPut("{id:guid}")]
+    [Authorize]
+    public async Task<IActionResult> EditarAsync(Guid id, [FromBody] DatosCampania cuerpo, CancellationToken ct)
+    {
+        var correlacionId = HttpContext.CorrelacionId();
+        var r = await _editar.EjecutarAsync(Solicitante_(User), id, cuerpo, correlacionId, ct);
+        return r.Exitoso ? Ok(r.Valor) : Problemas.Desde(r, correlacionId);
     }
 
     /// <summary>T-312.2</summary>

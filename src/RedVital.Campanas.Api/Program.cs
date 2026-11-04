@@ -1,15 +1,16 @@
 // RedVital — campaign-service. Conecta T-312.2, T-312.3, T-312.4 y T-312.5.
-// Validación de token propia (EC-03):
-//  - Development: con la llave PÚBLICA de prueba de T-303.1 (T-303.2), así se
-//    prueba Campañas sin tener Identidad corriendo.
-//  - QA/Production: con el JWKS real de identity-service (T-304.4). Ese
-//    perfil no declara la llave de prueba, por eso la rechaza (T-303.3).
+// Validación de token propia (EC-03), sin preguntarle nada a Identidad:
+//  - Development: con la llave PÚBLICA de prueba de T-303.1 (T-303.2).
+//  - QA/Production: con la llave pública de firma de Identidad, montada como
+//    secreto (identidad_llave_publica). Ese perfil no declara la llave de
+//    prueba, por eso la rechaza (T-303.3).
+// Con los demás servicios solo habla por Kafka.
 
-using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using RedVital.Campanas.Api.Mantenimiento;
 using RedVital.Campanas.Api.Mensajeria;
 using RedVital.Campanas.Api.Soporte;
 using RedVital.Campanas.Aplicacion.CasosDeUso;
@@ -36,8 +37,13 @@ builder.Services.AddScoped<ConsultarCampanias>();     // T-312.2
 builder.Services.AddScoped<ConsultarCampania>();      // T-312.3
 builder.Services.AddScoped<CambiarEstadoCampania>();  // T-312.4
 builder.Services.AddScoped<AplicarDonacionCompletada>(); // RF-25, consumidor de EV-01
+builder.Services.AddScoped<CrearCampania>();           // POST /v1/campanias
+builder.Services.AddScoped<EditarCampania>();          // PUT /v1/campanias/{id}
+builder.Services.AddScoped<IResolutorInstitucion, InstitucionesProyectadas>(); // copia local de EV-07
+builder.Services.AddScoped<AplicarInstitucionCambiada>(); // consumidor de EV-07
+builder.Services.AddHostedService<DepuradorRegistrosTecnicos>(); // bandeja publicada y eventos procesados vencidos
 
-// Kafka: único canal entre Campañas y Donación (ADR-018).
+// Kafka: único canal entre Campañas y los demás servicios (ADR-018).
 var kafka = conf.GetSection("Kafka").Get<OpcionesKafka>() ?? new OpcionesKafka();
 kafka.Clave ??= conf["kafka_campanias"];
 if (kafka.Habilitado)
@@ -46,7 +52,15 @@ if (kafka.Habilitado)
     builder.Services.AddSingleton<ProductorKafka>();
     builder.Services.AddHostedService<PublicadorBandeja>();
     builder.Services.AddHostedService<ConsumidorDonacionCompletada>();
+    builder.Services.AddHostedService<ConsumidorInstitucionCambiada>();
 }
+
+// La llave pública de firma de Identidad se lee al arrancar: si falta o no es
+// válida, el servicio no arranca, en vez de responder 500 a cada petición.
+var llavePublicaDev = conf["Jwt:LlavePublicaDesarrollo"];
+var llaveFirma = LlavePublica.Cargar(builder.Environment.IsDevelopment() && !string.IsNullOrEmpty(llavePublicaDev)
+    ? Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, llavePublicaDev))
+    : conf["Jwt:LlavePublica"] ?? "/run/secrets/identidad_llave_publica");
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer(o =>
 {
@@ -61,19 +75,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
         ClockSkew = TimeSpan.FromSeconds(30),
     };
 
-    var llavePublicaDev = conf["Jwt:LlavePublicaDesarrollo"];
-    if (builder.Environment.IsDevelopment() && !string.IsNullOrEmpty(llavePublicaDev))
-    {
-        var rsa = RSA.Create();
-        rsa.ImportFromPem(File.ReadAllText(Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, llavePublicaDev))));
-        o.TokenValidationParameters.IssuerSigningKey = new RsaSecurityKey(rsa) { KeyId = "dev-key-1" };
-    }
-    else
-    {
-        // Descubrimiento → jwks_uri de identity-service, por la red interna.
-        o.MetadataAddress = conf["Jwt:Descubrimiento"]!;
-        o.RequireHttpsMetadata = false; // red_aplicacion interna; TLS termina en Caddy
-    }
+    o.TokenValidationParameters.IssuerSigningKey = llaveFirma;
 
     o.Events = new JwtBearerEvents
     {
@@ -86,8 +88,15 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJw
 });
 builder.Services.AddAuthorization();
 
-builder.Services.AddControllers().AddJsonOptions(o =>
-    o.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower); // cupo_disponible, publicada_en…
+builder.Services.AddControllers()
+    .AddJsonOptions(o =>
+    {
+        o.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower; // cupo_disponible, publicada_en…
+        // Una propiedad desconocida en el cuerpo es un 400, como en Donación e Institucional.
+        o.JsonSerializerOptions.UnmappedMemberHandling = System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow;
+    })
+    .ConfigureApiBehaviorOptions(o => o.InvalidModelStateResponseFactory = c =>
+        Problemas.Crear(400, "peticion-invalida", "Petición inválida", "El cuerpo no cumple el contrato.", c.HttpContext.CorrelacionId()));
 
 var app = builder.Build();
 app.UsarCorrelacion();

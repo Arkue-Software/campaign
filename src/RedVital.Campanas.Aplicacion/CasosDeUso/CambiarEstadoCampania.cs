@@ -25,11 +25,13 @@ public class CambiarEstadoCampania
 {
     private readonly CampanasDbContext _contexto;
     private readonly IRegistradorAuditoriaCamp _auditoria;
+    private readonly IResolutorInstitucion _instituciones;
 
-    public CambiarEstadoCampania(CampanasDbContext contexto, IRegistradorAuditoriaCamp auditoria)
+    public CambiarEstadoCampania(CampanasDbContext contexto, IRegistradorAuditoriaCamp auditoria, IResolutorInstitucion instituciones)
     {
         _contexto = contexto;
         _auditoria = auditoria;
+        _instituciones = instituciones;
     }
 
     public async Task<Resultado<CampaniaRespuesta>> EjecutarAsync(Solicitante s, Guid id, Accion accion, string correlacionId, CancellationToken ct = default)
@@ -54,7 +56,7 @@ public class CambiarEstadoCampania
         }
 
         if (c.Estado == hacia) // reenvío: no se repite el cambio
-            return Resultado<CampaniaRespuesta>.Ok(CampaniaRespuesta.Desde(c));
+            return Resultado<CampaniaRespuesta>.Ok(CampaniaRespuesta.Desde(c, await NombresInstitucion.DeAsync(_instituciones, c.InstitucionId, ct)));
 
         if (c.Estado != desde)
             return Resultado<CampaniaRespuesta>.Error(Fallo.Conflicto); // 409 conflicto-de-estado
@@ -73,7 +75,7 @@ public class CambiarEstadoCampania
         await _contexto.SaveChangesAsync(ct);
 
         await _auditoria.RegistrarAsync(Auditar.Hecho(s, operacion, id, "permitido", correlacionId), ct);
-        return Resultado<CampaniaRespuesta>.Ok(CampaniaRespuesta.Desde(c));
+        return Resultado<CampaniaRespuesta>.Ok(CampaniaRespuesta.Desde(c, await NombresInstitucion.DeAsync(_instituciones, c.InstitucionId, ct)));
     }
 
     /// <summary>EV-03 para la bandeja. La clave natural impide que la misma publicación genere dos eventos (IN-11).</summary>

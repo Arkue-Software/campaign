@@ -1,7 +1,8 @@
 // RedVital — campaign-service
-// T-312.1 (mapeo) y T-312.5 (serie de auditoría). Mapea contra
+// T-312.1 (mapeo), T-312.5 (serie de auditoría) y la copia local de instituciones. Mapea contra
 // databases/campanas/schema.sql; nunca llama a Migrate() ni EnsureCreated().
 
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using RedVital.Campanas.Dominio;
 
@@ -15,6 +16,7 @@ public class CampanasDbContext : DbContext
     public DbSet<ReservaCupo> ReservasCupo => Set<ReservaCupo>();
     public DbSet<RegistroAuditoriaCamp> RegistroAuditoriaCamp => Set<RegistroAuditoriaCamp>();
     public DbSet<EventoSalida> EventosSalida => Set<EventoSalida>();
+    public DbSet<InstitucionProyeccion> Instituciones => Set<InstitucionProyeccion>();
 
     protected override void OnModelCreating(ModelBuilder m)
     {
@@ -63,6 +65,21 @@ public class CampanasDbContext : DbContext
             e.Property(x => x.ExpiraEn).HasColumnName("expira_en");
         });
 
+        m.Entity<InstitucionProyeccion>(e =>
+        {
+            e.ToTable("institucion_proyeccion");
+            e.HasKey(i => i.InstitucionId);
+            e.Property(i => i.InstitucionId).HasColumnName("institucion_id");
+            e.Property(i => i.Codigo).HasColumnName("codigo");
+            e.Property(i => i.Nombre).HasColumnName("nombre");
+            e.Property(i => i.Tipo).HasColumnName("tipo");
+            e.Property(i => i.TerritorioCodigo).HasColumnName("territorio_codigo");
+            e.Property(i => i.TerritorioRuta).HasColumnName("territorio_ruta");
+            e.Property(i => i.Vigente).HasColumnName("vigente");
+            e.Property(i => i.CambiadoEn).HasColumnName("cambiado_en");
+            e.Property(i => i.ActualizadoEn).HasColumnName("actualizado_en");
+        });
+
         m.Entity<ReservaCupo>(e =>
         {
             e.ToTable("reserva_cupo");
@@ -97,15 +114,62 @@ public class CampanasDbContext : DbContext
     }
 }
 
-/// <summary>T-312.5 — solo inserta. No existe método de actualización ni borrado.</summary>
+/// <summary>
+/// T-312.5 — solo inserta. No existe método de actualización ni borrado.
+/// Cada registro sale también a Kafka (EV-10, audit.recorded) para la bitácora
+/// del Servicio Institucional, por la bandeja y en la misma transacción.
+/// </summary>
 public class RegistradorAuditoriaCamp : IRegistradorAuditoriaCamp
 {
+    public const string Tema = "redvital.campanias.audit-recorded.v1";
+    public const string Tipo = "audit.recorded";
+
+    private static readonly JsonSerializerOptions Contrato = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+
     private readonly CampanasDbContext _contexto;
     public RegistradorAuditoriaCamp(CampanasDbContext contexto) => _contexto = contexto;
 
     public async Task RegistrarAsync(RegistroAuditoriaCamp registro, CancellationToken ct = default)
     {
         _contexto.RegistroAuditoriaCamp.Add(registro);
+        _contexto.EventosSalida.Add(new EventoSalida
+        {
+            Id = Guid.NewGuid(),
+            Tipo = Tipo,
+            VersionEsquema = 1,
+            Tema = Tema,
+            // Por correlación: los registros de una misma operación quedan en orden.
+            Clave = registro.CorrelacionId,
+            Carga = JsonSerializer.Serialize(new
+            {
+                registro.Id, registro.ActorTipo, registro.ActorId, registro.Rol, registro.JurisdiccionSolicitada,
+                registro.Operacion, registro.RecursoTipo, registro.RecursoId, registro.Resultado,
+                registro.CorrelacionId, registro.Origen, registro.OcurridoEn,
+            }, Contrato),
+            CorrelacionId = registro.CorrelacionId,
+            CreadoEn = DateTimeOffset.UtcNow,
+        });
         await _contexto.SaveChangesAsync(ct);
+    }
+}
+
+/// <summary>Adaptador de IResolutorInstitucion sobre institucion_proyeccion.</summary>
+public class InstitucionesProyectadas : IResolutorInstitucion
+{
+    private readonly CampanasDbContext _contexto;
+    public InstitucionesProyectadas(CampanasDbContext contexto) => _contexto = contexto;
+
+    public async Task<InstitucionResuelta?> ResolverAsync(Guid institucionId, CancellationToken ct = default) =>
+        await _contexto.Instituciones.AsNoTracking()
+            .Where(i => i.InstitucionId == institucionId)
+            .Select(i => new InstitucionResuelta(i.InstitucionId, i.Nombre, i.Tipo, i.TerritorioCodigo, i.TerritorioRuta, i.Vigente))
+            .FirstOrDefaultAsync(ct);
+
+    public async Task<IReadOnlyDictionary<Guid, string>> NombresAsync(IReadOnlyCollection<Guid> instituciones, CancellationToken ct = default)
+    {
+        if (instituciones.Count == 0) return new Dictionary<Guid, string>();
+        return await _contexto.Instituciones.AsNoTracking()
+            .Where(i => instituciones.Contains(i.InstitucionId))
+            .ToDictionaryAsync(i => i.InstitucionId, i => i.Nombre, ct);
     }
 }

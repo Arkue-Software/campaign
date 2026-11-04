@@ -4,6 +4,7 @@
 
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
+using RedVital.Campanas.Api.Mantenimiento;
 using RedVital.Campanas.Aplicacion.CasosDeUso;
 using RedVital.Campanas.Aplicacion.Eventos;
 using RedVital.Campanas.Dominio;
@@ -82,12 +83,14 @@ public class EventosPostgresPruebas : IClassFixture<BaseCampanias>
         await using (var c = _base.Contexto())
         {
             var admin = new Solicitante(Guid.NewGuid().ToString(), "admin_banco", $"institucion:{campania.InstitucionId}");
-            var r = await new CambiarEstadoCampania(c, new RegistradorAuditoriaCamp(c))
+            var r = await new CambiarEstadoCampania(c, new RegistradorAuditoriaCamp(c), new InstitucionesProyectadas(c))
                 .EjecutarAsync(admin, campania.Id, Accion.Publicar, Guid.NewGuid().ToString());
             Assert.True(r.Exitoso);
         }
         await using var verificacion = _base.Contexto();
         var evento = await verificacion.EventosSalida.SingleAsync(e => e.Clave == campania.Id.ToString());
+        // El registro de auditoría también salió por la bandeja: el tipo lo admite la base.
+        Assert.True(await verificacion.EventosSalida.AnyAsync(e => e.Tipo == "audit.recorded" && e.Tema == RegistradorAuditoriaCamp.Tema));
         Assert.True(evento.Secuencia > 0);
         Assert.Equal("pendiente", evento.Estado);
         Assert.Contains("\"campania_id\"", evento.Carga);
@@ -112,6 +115,73 @@ public class EventosPostgresPruebas : IClassFixture<BaseCampanias>
         }
         await using var verificacion = _base.Contexto();
         Assert.Equal(2, (await verificacion.Campanias.SingleAsync(x => x.Id == campania.Id)).DonacionesRegistradas);
+    }
+
+    private static InstitucionCambiadaV1 Institucion(Guid id, string nombre, DateTimeOffset cambiadoEn, bool vigente = true) =>
+        new(id, "QA-" + id.ToString()[..6], nombre, "banco_de_sangre", "05001", "/00/05/05001", vigente, cambiadoEn);
+
+    [Fact]
+    public async Task La_institucion_se_guarda_una_vez_y_un_evento_viejo_no_pisa_uno_nuevo()
+    {
+        var id = Guid.NewGuid();
+        var ahora = DateTimeOffset.UtcNow;
+        var eventoId = Guid.NewGuid();
+
+        await using (var c = _base.Contexto())
+        {
+            Assert.True(await new AplicarInstitucionCambiada(c).EjecutarAsync(eventoId, Institucion(id, "Banco Uno", ahora)));
+            Assert.False(await new AplicarInstitucionCambiada(c).EjecutarAsync(eventoId, Institucion(id, "Banco Uno", ahora)));
+            Assert.True(await new AplicarInstitucionCambiada(c).EjecutarAsync(Guid.NewGuid(), Institucion(id, "Banco Renombrado", ahora.AddMinutes(1))));
+            // Llega tarde un evento anterior: se registra como procesado, pero no cambia nada.
+            Assert.True(await new AplicarInstitucionCambiada(c).EjecutarAsync(Guid.NewGuid(), Institucion(id, "Nombre Viejo", ahora.AddMinutes(-5), vigente: false)));
+        }
+        await using var verificacion = _base.Contexto();
+        var guardada = await verificacion.Instituciones.SingleAsync(i => i.InstitucionId == id);
+        Assert.Equal(("Banco Renombrado", true), (guardada.Nombre, guardada.Vigente));
+        var resuelta = await new InstitucionesProyectadas(verificacion).ResolverAsync(id);
+        Assert.Equal("/00/05/05001", resuelta!.TerritorioRuta);
+    }
+
+    [Fact]
+    public async Task La_depuracion_borra_solo_lo_publicado_o_procesado_que_ya_vencio()
+    {
+        var vencido = Guid.NewGuid();
+        var vigente = Guid.NewGuid();
+        var pendiente = Guid.NewGuid();
+        var procesadoVencido = Guid.NewGuid();
+        var procesadoVigente = Guid.NewGuid();
+        await using (var conexion = new NpgsqlConnection(_base.CadenaServicio))
+        {
+            await conexion.OpenAsync();
+            var sql = $$"""
+                INSERT INTO evento_salida (id, tipo, version_esquema, tema, clave, carga, correlacion_id, estado, publicado_en, expira_en)
+                VALUES ('{{vencido}}', 'audit.recorded', 1, 't', 'c', '{}', 'c', 'publicado', now() - interval '10 days', now() - interval '1 day'),
+                       ('{{vigente}}', 'audit.recorded', 1, 't', 'c', '{}', 'c', 'publicado', now(), now() + interval '6 days'),
+                       ('{{pendiente}}', 'audit.recorded', 1, 't', 'c', '{}', 'c', 'pendiente', NULL, NULL);
+                INSERT INTO evento_procesado (grupo_consumidor, evento_id, tipo, procesado_en, expira_en)
+                VALUES ('g', '{{procesadoVencido}}', 't', now() - interval '20 days', now() - interval '1 day'),
+                       ('g', '{{procesadoVigente}}', 't', now(), now() + interval '13 days');
+                """;
+            await new NpgsqlCommand(sql, conexion).ExecuteNonQueryAsync();
+        }
+
+        await using (var c = _base.Contexto())
+        {
+            Assert.True(await DepuradorRegistrosTecnicos.DepurarAsync(c, CancellationToken.None) >= 2);
+        }
+
+        await using var verificacion = new NpgsqlConnection(_base.CadenaServicio);
+        await verificacion.OpenAsync();
+        async Task<bool> Existe(string tabla, string columna, Guid id) =>
+            (long)(await new NpgsqlCommand($"SELECT count(*) FROM {tabla} WHERE {columna} = '{id}'", verificacion).ExecuteScalarAsync())! == 1;
+        Assert.False(await Existe("evento_salida", "id", vencido));
+        Assert.True(await Existe("evento_salida", "id", vigente));
+        Assert.True(await Existe("evento_salida", "id", pendiente));
+        Assert.False(await Existe("evento_procesado", "evento_id", procesadoVencido));
+        Assert.True(await Existe("evento_procesado", "evento_id", procesadoVigente));
+
+        // Nada de esta prueba queda pendiente: un publicador de otra prueba lo intentaría enviar.
+        await new NpgsqlCommand($"DELETE FROM evento_salida WHERE id IN ('{vigente}', '{pendiente}')", verificacion).ExecuteNonQueryAsync();
     }
 
     [Fact]

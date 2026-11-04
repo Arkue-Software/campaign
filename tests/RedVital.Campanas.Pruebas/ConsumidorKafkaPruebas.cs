@@ -33,7 +33,11 @@ public sealed class BrokerKafka : IAsyncLifetime
     {
         await _kafka.StartAsync();
         using var admin = new AdminClientBuilder(new AdminClientConfig { BootstrapServers = Servidores }).Build();
-        await admin.CreateTopicsAsync([new TopicSpecification { Name = Temas.DonacionCompletada, NumPartitions = 3, ReplicationFactor = 1 }]);
+        await admin.CreateTopicsAsync([
+            new TopicSpecification { Name = Temas.DonacionCompletada, NumPartitions = 3, ReplicationFactor = 1 },
+            new TopicSpecification { Name = Temas.InstitucionCambiada, NumPartitions = 3, ReplicationFactor = 1 },
+            new TopicSpecification { Name = Temas.InstitucionCambiada + Temas.SufijoMensajesMuertos, NumPartitions = 1, ReplicationFactor = 1 },
+        ]);
     }
 
     public Task DisposeAsync() => _kafka.DisposeAsync().AsTask();
@@ -98,6 +102,58 @@ public class ConsumidorKafkaPruebas : IClassFixture<BaseCampanias>, IClassFixtur
         Assert.False(await LlegaAsync(TemaMuertos, evento, TimeSpan.FromSeconds(3)));
     }
 
+    [Fact]
+    public async Task La_institucion_publicada_llega_a_la_copia_local_y_un_evento_incompleto_va_a_mensajes_muertos()
+    {
+        var institucion = Guid.NewGuid();
+        var incompleto = Guid.NewGuid();
+        var bueno = Guid.NewGuid();
+
+        await using var consumidor = await IniciarConsumidorInstitucionesAsync();
+        await PublicarEnAsync(Temas.InstitucionCambiada, institucion.ToString(), incompleto, $$"""{"institucion_id":"{{institucion}}"}""");
+        await PublicarEnAsync(Temas.InstitucionCambiada, institucion.ToString(), bueno, $$"""
+            {"institucion_id":"{{institucion}}","codigo":"QA-K1","nombre":"Banco por Kafka","tipo":"banco_de_sangre",
+             "territorio_codigo":"05001","territorio_ruta":"/00/05/05001","vigente":true,"cambiado_en":"{{DateTimeOffset.UtcNow:O}}"}
+            """);
+
+        await EsperarAsync(async () =>
+        {
+            await using var c = _base.Contexto();
+            return await c.Instituciones.AnyAsync(i => i.InstitucionId == institucion && i.Nombre == "Banco por Kafka");
+        });
+        Assert.True(await LlegaAsync(Temas.InstitucionCambiada + Temas.SufijoMensajesMuertos, incompleto, TimeSpan.FromSeconds(30)));
+    }
+
+    private sealed class ConsumidorInstitucionesEnMarcha(ConsumidorInstitucionCambiada servicio, ProductorKafka productor,
+        ServiceProvider proveedor) : IAsyncDisposable
+    {
+        public async ValueTask DisposeAsync()
+        {
+            await servicio.StopAsync(CancellationToken.None);
+            productor.Dispose();
+            await proveedor.DisposeAsync();
+        }
+    }
+
+    private async Task<ConsumidorInstitucionesEnMarcha> IniciarConsumidorInstitucionesAsync()
+    {
+        var servicios = new ServiceCollection();
+        servicios.AddLogging(l => l.AddSimpleConsole().SetMinimumLevel(LogLevel.Information));
+        servicios.AddDbContext<CampanasDbContext>(o => o.UseNpgsql(_base.CadenaServicio), optionsLifetime: ServiceLifetime.Scoped);
+        servicios.AddScoped<AplicarInstitucionCambiada>();
+        var proveedor = servicios.BuildServiceProvider();
+        var opciones = new OpcionesKafka
+        {
+            Habilitado = true, Servidores = _broker.Servidores, Protocolo = "Plaintext",
+            EsperaDependencia = TimeSpan.FromMilliseconds(500),
+        };
+        var productor = new ProductorKafka(opciones);
+        var servicio = new ConsumidorInstitucionCambiada(opciones, productor, proveedor.GetRequiredService<IServiceScopeFactory>(),
+            proveedor.GetRequiredService<ILogger<ConsumidorInstitucionCambiada>>());
+        await servicio.StartAsync(CancellationToken.None);
+        return new ConsumidorInstitucionesEnMarcha(servicio, productor, proveedor);
+    }
+
     // ------------------------------------------------------------------ utilidades
 
     private sealed class ConsumidorEnMarcha(ConsumidorDonacionCompletada servicio, ProductorKafka productor,
@@ -119,6 +175,7 @@ public class ConsumidorKafkaPruebas : IClassFixture<BaseCampanias>, IClassFixtur
         servicios.AddLogging(l => l.AddSimpleConsole().SetMinimumLevel(LogLevel.Information));
         servicios.AddDbContext<CampanasDbContext>(o => o.UseNpgsql(_cadenaBase), optionsLifetime: ServiceLifetime.Scoped);
         servicios.AddScoped<AplicarDonacionCompletada>();
+        servicios.AddScoped<AplicarInstitucionCambiada>();
         var proveedor = servicios.BuildServiceProvider();
 
         var opciones = new OpcionesKafka
@@ -155,10 +212,12 @@ public class ConsumidorKafkaPruebas : IClassFixture<BaseCampanias>, IClassFixtur
         return (await c.Campanias.AsNoTracking().SingleAsync(x => x.Id == campania)).DonacionesRegistradas;
     }
 
-    private async Task PublicarAsync(string clave, Guid eventoId, string carga)
+    private Task PublicarAsync(string clave, Guid eventoId, string carga) => PublicarEnAsync(Temas.DonacionCompletada, clave, eventoId, carga);
+
+    private async Task PublicarEnAsync(string tema, string clave, Guid eventoId, string carga)
     {
         using var productor = new ProducerBuilder<string, string>(new ProducerConfig { BootstrapServers = _broker.Servidores }).Build();
-        await productor.ProduceAsync(Temas.DonacionCompletada, new Message<string, string>
+        await productor.ProduceAsync(tema, new Message<string, string>
         {
             Key = clave,
             Value = carga,

@@ -26,6 +26,15 @@ public static class Correlacion
 
 public static class Problemas
 {
+    public static IActionResult Desde<T>(Resultado<T> r, string correlacionId) => r.Fallo switch
+    {
+        Fallo.Conflicto when r.Detalle is not null => Crear(409, "conflicto-de-estado", "Conflicto de estado", r.Detalle, correlacionId),
+        Fallo.Invalido => Crear(400, "peticion-invalida", "Petición inválida", r.Detalle ?? "La petición no es válida.", correlacionId),
+        Fallo.NoDisponible => Crear(503, "dependencia-no-disponible", "Servicio no disponible",
+            r.Detalle ?? "Un servicio necesario no responde.", correlacionId),
+        _ => Desde(r.Fallo, correlacionId),
+    };
+
     public static IActionResult Desde(Fallo fallo, string correlacionId) => fallo switch
     {
         Fallo.NoPermitido => Crear(403, "operacion-no-permitida", "Operación no permitida", "El rol no autoriza esta operación.", correlacionId),

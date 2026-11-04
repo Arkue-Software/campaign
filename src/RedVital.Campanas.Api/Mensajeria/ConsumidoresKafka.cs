@@ -1,5 +1,6 @@
-// RedVital — campaign-service. Consumidor de EV-01 donation.completed, grupo
-// campanias (ADR-018, DD 14.1). Ni deja caer al servicio ni se salta un evento:
+// RedVital — campaign-service. Consumidores de Kafka, grupo campanias
+// (ADR-018, DD 14.1): EV-01 donation.completed y EV-07 institution.changed.
+// Ni dejan caer al servicio ni se saltan un evento:
 //
 //  - Al menos una vez sin esperar al broker por cada mensaje: la posición se
 //    guarda solo después de aplicar el evento y librdkafka la confirma en
@@ -22,23 +23,38 @@ using RedVital.Campanas.Infraestructura.Persistencia;
 
 namespace RedVital.Campanas.Api.Mensajeria;
 
-public sealed class ConsumidorDonacionCompletada : BackgroundService
+/// <summary>
+/// Ciclo común de los consumidores de Campañas. Cada tema tiene su subclase,
+/// que solo dice cómo leer el contrato y qué caso de uso lo aplica.
+/// </summary>
+public abstract class ConsumidorKafka<TEvento> : BackgroundService where TEvento : class
 {
     private static readonly TimeSpan[] Esperas = [TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(4)];
 
     private readonly OpcionesKafka _opciones;
     private readonly ProductorKafka _kafka;
     private readonly IServiceScopeFactory _ambitos;
-    private readonly ILogger<ConsumidorDonacionCompletada> _log;
+    private readonly ILogger _log;
 
-    public ConsumidorDonacionCompletada(OpcionesKafka opciones, ProductorKafka kafka, IServiceScopeFactory ambitos,
-        ILogger<ConsumidorDonacionCompletada> log)
+    protected ConsumidorKafka(OpcionesKafka opciones, ProductorKafka kafka, IServiceScopeFactory ambitos, ILogger log)
     {
         _opciones = opciones;
         _kafka = kafka;
         _ambitos = ambitos;
         _log = log;
     }
+
+    /// <summary>Tema que consume.</summary>
+    protected abstract string Tema { get; }
+
+    /// <summary>Tipo del contrato, para el motivo de un mensaje muerto.</summary>
+    protected abstract string TipoEvento { get; }
+
+    /// <summary>Nulo si la carga no cumple el contrato.</summary>
+    protected abstract TEvento? Interpretar(string carga);
+
+    /// <returns>Falso si el evento ya se había aplicado.</returns>
+    protected abstract Task<bool> AplicarAsync(IServiceProvider servicios, Guid eventoId, TEvento evento, CancellationToken ct);
 
     protected override Task ExecuteAsync(CancellationToken ct) => Task.Run(() => SupervisarAsync(ct), ct);
 
@@ -57,7 +73,7 @@ public sealed class ConsumidorDonacionCompletada : BackgroundService
             }
             catch (Exception e)
             {
-                _log.LogError(e, "El consumidor de {Tema} falló; se crea otro en {Espera}", Temas.DonacionCompletada,
+                _log.LogError(e, "El consumidor de {Tema} falló; se crea otro en {Espera}", Tema,
                     _opciones.EsperaDependencia);
                 await EsperarAsync(_opciones.EsperaDependencia, ct);
             }
@@ -73,11 +89,11 @@ public sealed class ConsumidorDonacionCompletada : BackgroundService
             EnableAutoCommit = true,
             EnableAutoOffsetStore = false,
             AutoCommitIntervalMs = 1000,
-            ClientId = "campanias",
+            ClientId = "campanias-" + Tema,
         }))
             .SetErrorHandler((_, e) => _log.LogWarning("Kafka: {Motivo}", e.Reason))
             .Build();
-        consumidor.Subscribe(Temas.DonacionCompletada);
+        consumidor.Subscribe(Tema);
         try
         {
             while (!ct.IsCancellationRequested)
@@ -118,17 +134,15 @@ public sealed class ConsumidorDonacionCompletada : BackgroundService
     private async Task<bool> ProcesarAsync(ConsumeResult<string, string> registro, CancellationToken ct)
     {
         if (!Leer(registro, out var eventoId, out var evento))
-            return await MensajeMuertoAsync(registro, "El mensaje no cumple el contrato de donation.completed.", ct);
+            return await MensajeMuertoAsync(registro, $"El mensaje no cumple el contrato de {TipoEvento}.", ct);
 
         for (var intento = 0; ; intento++)
         {
             try
             {
                 using var ambito = _ambitos.CreateScope();
-                var aplicado = await ambito.ServiceProvider.GetRequiredService<AplicarDonacionCompletada>()
-                    .EjecutarAsync(eventoId, evento!, ct);
-                _log.LogInformation("Evento {Id} de donación {Donacion}: {Resultado}", eventoId, evento!.DonacionId,
-                    aplicado ? "aplicado" : "duplicado");
+                var aplicado = await AplicarAsync(ambito.ServiceProvider, eventoId, evento!, ct);
+                _log.LogInformation("Evento {Id} de {Tema}: {Resultado}", eventoId, Tema, aplicado ? "aplicado" : "duplicado");
                 return true;
             }
             catch (Exception e) when (e is not OperationCanceledException && FallosTransitorios.EsDeLaBase(e))
@@ -150,7 +164,7 @@ public sealed class ConsumidorDonacionCompletada : BackgroundService
         }
     }
 
-    private static bool Leer(ConsumeResult<string, string> r, out Guid eventoId, out DonacionCompletadaV1? evento)
+    private bool Leer(ConsumeResult<string, string> r, out Guid eventoId, out TEvento? evento)
     {
         evento = null;
         eventoId = Guid.Empty;
@@ -159,8 +173,8 @@ public sealed class ConsumidorDonacionCompletada : BackgroundService
             return false;
         try
         {
-            evento = JsonSerializer.Deserialize<DonacionCompletadaV1>(r.Message.Value, Json.Contrato);
-            return evento is not null && evento.DonacionId != Guid.Empty;
+            evento = Interpretar(r.Message.Value);
+            return evento is not null;
         }
         catch (JsonException)
         {
@@ -229,4 +243,32 @@ public sealed class ConsumidorDonacionCompletada : BackgroundService
         {
         }
     }
+}
+
+/// <summary>EV-01 donation.completed: suma la donación a su campaña (RF-25).</summary>
+public sealed class ConsumidorDonacionCompletada(OpcionesKafka opciones, ProductorKafka kafka, IServiceScopeFactory ambitos,
+    ILogger<ConsumidorDonacionCompletada> log) : ConsumidorKafka<DonacionCompletadaV1>(opciones, kafka, ambitos, log)
+{
+    protected override string Tema => Temas.DonacionCompletada;
+    protected override string TipoEvento => DonacionCompletadaV1.Tipo;
+
+    protected override DonacionCompletadaV1? Interpretar(string carga) =>
+        JsonSerializer.Deserialize<DonacionCompletadaV1>(carga, Json.Contrato) is { DonacionId: var id } e && id != Guid.Empty ? e : null;
+
+    protected override Task<bool> AplicarAsync(IServiceProvider servicios, Guid eventoId, DonacionCompletadaV1 evento, CancellationToken ct) =>
+        servicios.GetRequiredService<AplicarDonacionCompletada>().EjecutarAsync(eventoId, evento, ct);
+}
+
+/// <summary>EV-07 institution.changed: mantiene la copia local de instituciones.</summary>
+public sealed class ConsumidorInstitucionCambiada(OpcionesKafka opciones, ProductorKafka kafka, IServiceScopeFactory ambitos,
+    ILogger<ConsumidorInstitucionCambiada> log) : ConsumidorKafka<InstitucionCambiadaV1>(opciones, kafka, ambitos, log)
+{
+    protected override string Tema => Temas.InstitucionCambiada;
+    protected override string TipoEvento => InstitucionCambiadaV1.TipoEvento;
+
+    protected override InstitucionCambiadaV1? Interpretar(string carga) =>
+        JsonSerializer.Deserialize<InstitucionCambiadaV1>(carga, Json.Contrato) is { Completo: true } e ? e : null;
+
+    protected override Task<bool> AplicarAsync(IServiceProvider servicios, Guid eventoId, InstitucionCambiadaV1 evento, CancellationToken ct) =>
+        servicios.GetRequiredService<AplicarInstitucionCambiada>().EjecutarAsync(eventoId, evento, ct);
 }
